@@ -1,6 +1,7 @@
 # DeepSeek-V4.1-Flash on RTX PRO 6000 (SM120) — Measured Performance & Production Configuration
 
 > Status: **In production** as the local inference backend for a single-user Hermes deployment (2026-09-23), serving a 1M-context assistant workload.
+> ⚠️ **Deployment description superseded (2026-09-27)** — the layout below (8 GPUs, TP8/EP8, `max_running_requests=16`) is no longer what runs. For the live configuration, runtime status and a concurrency benchmark, see [Live Configuration & Concurrency Benchmark (2026-09-27)](DeepSeek-V4.1-Flash-SM120-Live-Config-and-Concurrency-2026-09-27.md).
 > Supersedes the performance claims in [DeepSeek-V4.1-Flash-SM120-Status.md](DeepSeek-V4.1-Flash-SM120-Status.md) (2026-09-22) — see [Corrections to prior notes](#corrections-to-prior-notes).
 > Related: [GLM-5.3-Flash deployment guide](GLM-5.3-Flash-SM120-Deployment.md).
 
