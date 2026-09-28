@@ -2,6 +2,9 @@
 
 > Status: **In production** as the local inference backend of a single-user Hermes deployment.
 > Snapshot taken **2026-09-27** (host clock: CST / UTC+8, `gpu01`).
+> ⚠️ **Context budget superseded (2026-09-28)** — production has since been re-created with
+> `CONTEXT_LENGTH=1048576`; see [1M Context Validation (2026-09-28)](DeepSeek-V4.1-Flash-SM120-1M-Context-Validation-2026-09-28.md) for the verified 1M numbers, the unique-prefix
+> measurement rule, and three corrections to earlier figures (including one in this document).
 > Supersedes the *deployment description* in
 > [DeepSeek-V4.1-Flash-SM120-Performance-and-Production-Config.md](DeepSeek-V4.1-Flash-SM120-Performance-and-Production-Config.md) (2026-09-23),
 > which was measured on an **8-GPU TP8/EP8** layout that is **no longer what runs**. See §5 for the delta.
