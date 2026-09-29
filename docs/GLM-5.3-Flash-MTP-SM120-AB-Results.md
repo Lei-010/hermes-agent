@@ -11,7 +11,20 @@ MTP speculative decoding works on SM120 **with CUDA graphs** — the official re
 `enforce_eager: true` is a conservative default, not a hard requirement (source-verified:
 only `deepseek_v32` is force-eagered in `config/speculative.py`). Final production config:
 
-**spec3 (glm5_next_mtp) + CUDA graph + mem 0.97 + max-num-seqs 16 → decode 156 tok/s (+46% vs no-spec baseline), prefill 7.9K tok/s (unchanged), acceptance 2.1-2.4/3.**
+**spec3 (glm5_next_mtp) + CUDA graph + mem 0.97 + max-num-seqs 256 → decode 180-220 tok/s (short/80K-ctx), prefill 7.9K tok/s (unchanged), acceptance ~2.8/3.**
+
+> **⚠️ 2026-09-29 correction — v7 (seqs=16) reverted to seqs=256 after a production incident.**
+> Under real long-context agent load (270K-305K token conversations), seqs=16 triggered
+> premature generation stops: responses truncated at 16-23 tokens with `finish_reason=length`
+> and a half-sentence of reasoning, surfacing client-side as "empty response". The failure
+> did not reproduce with short-prompt benchmarks (the v7 decision basis) — only with 300K+
+> real conversations sharing the KV pool (3.18M tokens total, 3.03x max concurrency at 1M
+> ctx). After reverting to seqs=256: decode actually **improved** (204-219 tok/s short,
+> 180-184 tok/s @80K ctx, vs 156 at seqs=16), and stress tests passed at every level —
+> single request 330K→1M, 9×330K concurrent (93% KV pool), and 12×330K (24% over pool,
+> vLLM queued gracefully, 12/12 OK, zero empty). Lesson: **benchmark single-stream decode
+> ≠ 300K-token agent production load; size max-num-seqs from token-pressure, not request
+> counts.**
 
 ## A/B matrix (single-stream decode 2K tokens streaming, 128K cold prefill ×2)
 
@@ -22,7 +35,8 @@ only `deepseek_v32` is force-eagered in `config/speculative.py`). Final producti
 | v4 | spec3 + graph, mem0.91, seqs512 | 133 ✅ | 7.7K | 2.3-2.9 | interim production |
 | v5 | spec5 + mem0.93 + batch16k | 137 | 7.8K | 2.1-2.8/5 | rejected: +3% not worth 2× boot time (12 min) |
 | v6 | spec3 + graph, mem0.97, **seqs4** | **165.1** | 6.1-8.0K | 2.5-3.0 | benchmark ceiling; concurrency capped at 4 |
-| **v7** | spec3 + graph, mem0.97, **seqs16** | **156.4** | **7.9K** | 2.1-2.4 | **✅ production** |
+| v7 | spec3 + graph, mem0.97, **seqs16** | 156.4 | 7.9K | 2.1-2.4 | ❌ reverted 09-29: long-ctx early-stop (see correction above) |
+| **v8** | spec3 + graph, mem0.97, **seqs256** | **180-219** | **7.9K** | **~2.8** | **✅ production (09-29)** |
 
 Reference: krzychdre/GLM-5.3-Flash-sm120 (TP4, official FP8, MTP) reports 171.7 tok/s —
 we reach 91% of that on TP8 (PCIe-only platform, TP8 all-reduce overhead).
@@ -43,21 +57,29 @@ we reach 91% of that on TP8 (PCIe-only platform, TP8 all-reduce overhead).
    graph capture (87 s at spec3, longer at spec5). GPU memory allocated + container
    Running + recovers in minutes = capture; GPU util 0% for tens of minutes = real hang.
 
-## Why seqs (max-num-seqs) is the real decode lever
+## Why seqs (max-num-seqs) is the real decode lever — and its production trap
 
 Cutting `max-num-seqs` shrinks captured CUDA graph batch sizes → smaller, faster graphs
 → single-stream decode jumps (133 → 165 from seqs512 → 4). But request #seqs+1 hard-queues.
 Community benchmark configs (seqs=4) are single-stream-scored; **production seqs must be
-set from your real concurrency profile, not copied from benchmark repos**. Ours peaks at
-~8-12 concurrent (main agent + parallel subagents + 5 team profiles + cron), hence 16.
+set from your real concurrency profile, not copied from benchmark repos**.
+
+**The trap we hit (2026-09-29)**: sizing seqs from *request counts* (~8-12 concurrent
+requests → seqs=16) ignored *token pressure*. With a 3.18M-token KV pool and 1M-ctx
+requests, a single 300K-token agent conversation consumes ~10% of the pool; several in
+flight + seqs=16's tight scheduling window triggered premature generation stops (16-23
+token outputs, `finish_reason=length`, empty reasoning) — invisible to short-prompt
+benchmarks, catastrophic in agent production. seqs=256 restored stability with *no*
+decode penalty (see correction at top). Rule: **max-num-seqs ≥ expected concurrent
+token footprint / avg context length, with wide margin**.
 
 Mamba/hybrid note: `max-num-seqs 512` was originally set against Mamba cache-block limits
 (1024 OOMs); smaller seqs *relieves* that pressure and frees KV-pool headroom.
 
-## Production script (v7)
+## Production script (v8, 2026-09-29)
 
 ```bash
-docker run -d --name glm53 --gpus all --privileged --ipc=host --shm-size=64g \
+docker run -d --name glm53 --gpus all --privileged --ipc=host --shm-size 64g \
   --restart unless-stopped -p 8001:8000 \
   -v /ssd/GLM-5.3-Flash:/model \
   -e VLLM_LOGGING_LEVEL=INFO \
@@ -68,7 +90,7 @@ docker run -d --name glm53 --gpus all --privileged --ipc=host --shm-size=64g \
   vllm/vllm-openai:glm53-sm120nope \
   --model /model --served-model-name glm-5.3-flash --trust-remote-code \
   --tensor-parallel-size 8 --quantization fp8 --max-model-len 1048576 \
-  --max-num-seqs 16 --gpu-memory-utilization 0.97 --block-size 2304 \
+  --max-num-seqs 256 --gpu-memory-utilization 0.97 --block-size 2304 \
   --no-enable-flashinfer-autotune --enable-auto-tool-choice \
   --tool-call-parser glm47 --reasoning-parser glm45 \
   --speculative-config '{"method":"glm5_next_mtp","num_speculative_tokens":3}'
