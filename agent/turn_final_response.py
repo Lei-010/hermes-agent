@@ -114,14 +114,27 @@ def finish_text_response(
     ):
         _promoted = agent._extract_reasoning(assistant_message) or None
         if _promoted:
-            # WARNING, not INFO: a model that keeps ending turns this way is stalled
-            # (planning monologue, zero tool calls) while the turn reports "complete".
-            logger.warning(
-                "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
-                "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
-                len(_promoted), agent.model, agent.provider, api_call_count,
-                sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
-            )
+            # Token-salad guard (MTP draft pollution): a polluted reasoning stream
+            # (multi-script mixing, symbol-dense, code fragments) must not be
+            # delivered as the user-facing answer; fall through to the empty-response
+            # ladder instead of promoting garbage.
+            from agent.reasoning_garble_guard import looks_like_token_salad
+            if looks_like_token_salad(_promoted):
+                logger.warning(
+                    "Reasoning-only clean stop (%d chars) REJECTED as token salad "
+                    "(suspected spec-decode draft pollution) — not delivered (model=%s provider=%s)",
+                    len(_promoted), agent.model, agent.provider,
+                )
+                _promoted = None
+            else:
+                # WARNING, not INFO: a model that keeps ending turns this way is stalled
+                # (planning monologue, zero tool calls) while the turn reports "complete".
+                logger.warning(
+                    "Reasoning-only clean stop (%d chars) — returning the reasoning as the final "
+                    "response (model=%s provider=%s api_calls=%d tool_turns=%d)",
+                    len(_promoted), agent.model, agent.provider, api_call_count,
+                    sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
+                )
     final_response = _promoted or assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
